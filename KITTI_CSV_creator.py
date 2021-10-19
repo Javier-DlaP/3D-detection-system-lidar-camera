@@ -3,7 +3,7 @@ import pandas as pd
 import os
 import math
 
-KITTI_DATASET = '/media/javier/HDD_linux/KITTI_dataset'
+KITTI_DATASET = '/media/javier/HDD_linux/KITTI_dataset/'
 
 # Calculate distance between two 3D points
 def distance(a,b):
@@ -40,7 +40,7 @@ def kitti_2_csv(label_path, save_path='./'):
 
     print(df)
     
-    df.to_csv(save_path+'kitti_gt.csv',columns=col,index=False)
+    df.to_csv(save_path+'kitti_gt.csv',columns=col+['distance'],index=False)
 
 if __name__ == "__main__":
-    kitti_2_csv(KITTI_DATASET+'/training/label_2/', KITTI_DATASET+'/training/')
+    kitti_2_csv(KITTI_DATASET+'training/label_2/', KITTI_DATASET+'training/')
