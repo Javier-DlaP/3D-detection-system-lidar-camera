@@ -1,6 +1,0 @@
-- Refinar la aproximación de la distancia utilizan la proyección de la nube de putnos
-- Evaluación con las dificultades de KITTI tras el refinamiento
-- Analisis del error con el modelo de regresión
-- Análisis del error con el modelo de proyección de nube de puntos
-- Creación de un score por modelo
-- Unión de los modelos
