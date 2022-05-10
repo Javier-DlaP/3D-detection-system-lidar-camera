@@ -39,7 +39,6 @@ class DistanceApprox:
         self.approximate_distance_height()
         # Get pointcloud by bounding box ordered by distance obtained from the height model
         self.pcl_projected_bbs, self.detections = self.pcl_img_utils.get_projected_pcs_bb()
-        print(self.pcl_projected_bbs)
         self.approximate_distance_pcl()
         self.approximate_distance_ensemble()
 

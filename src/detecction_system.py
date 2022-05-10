@@ -27,6 +27,8 @@ class Detector3D:
         self.detect_yolo()
         # Approximate the distance of the detections
         self.approximate_distance()
+        # Obtain the frustum points
+        self.calculate_frustum_points()
 
     def load_yolo_model(self, threshold=0.6):
         """
@@ -58,10 +60,14 @@ class Detector3D:
         Approximate the distance of the detections.
         """
         self.pcl_img_utils = Pcl_Img_Utils(self.pcl, self.img, self.P2, self.R0_rect, self.Tr_velo_to_cam, self.yolo_detections)
-        # self.pcl_img_utils.calculate_point_cloud_projected()
-        # pcl_projected_bbs = self.pcl_img_utils.get_projected_pcs_bb()
         self.distance_approx = DistanceApprox(self.pcl_img_utils)
         self.distance_approx.approximate_distance()
+
+    def calculate_frustum_points(self):
+        """
+        Calculate the frustum points.
+        """
+        self.pcl_img_utils.get_pcs_bb()
 
     # def proyect_2d_to_3d_points(self, points_2d):
     #     """

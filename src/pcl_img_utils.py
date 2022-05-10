@@ -1,3 +1,4 @@
+from time import time
 import numpy as np
 
 class Pcl_Img_Utils:
@@ -19,17 +20,18 @@ class Pcl_Img_Utils:
         # Delete the points that are behind the camera
         velo = np.insert(points,3,1,axis=1).T
         velo = np.delete(velo,np.where(velo[0,:]<0),axis=1)
-        self.pcl = velo.copy()
         
         # Transform the points to the camera frame
-        cam = self.P2 * self.R0_rect * self.Tr_velo_to_cam * velo
+        self.pcl = self.Tr_velo_to_cam * velo
+        cam = self.P2 * self.R0_rect * self.pcl
         cam[:2] /= cam[2,:]
         # Create a mask with the points that are not on the image
-        filter_cam = (cam[0,:]>=self.img.size[0]) & (cam[0,:]<0) & (cam[1,:]>=self.img.size[1]) & (cam[1,:]<0)
+        filter_cam = ~((cam[0,:]<self.img.size[0]) & (cam[0,:]>=0) & (cam[1,:]<self.img.size[1]) | (cam[1,:]>=0))
         filter_cam = np.array(filter_cam).flatten()
 
         # Apply the mask to the projected points
         cam = np.delete(cam,np.where(filter_cam),axis=1)
+        
         # Save the mask to be used later
         self.pcl_projected_filter = filter_cam
         # Save the projected points
@@ -42,7 +44,7 @@ class Pcl_Img_Utils:
         self.__calculate_point_cloud_projected()
         return self.pcl_projected
 
-    def __calculate_projected_pcs_bb(self):
+    def calculate_projected_pcs_bb(self):
         """
         Calculate the projected pointcloud that correspond to the bounding box of the detections.
         """
@@ -75,10 +77,21 @@ class Pcl_Img_Utils:
         Get the projected pointcloud that correspond to the bounding box of the detections.
         """
         self.detections = self.detections.sort_values(by='distance_height')
-        self.__calculate_projected_pcs_bb()
+        self.calculate_projected_pcs_bb()
         return self.pcl_projected_bbs, self.detections
 
-########################################################################################################################
-##################################1. APLICAR LOS FILTROS SOBRE LA NUBE DE PUNTOS########################################
-#########################2. GENERAR NUEVO DATASET A PARTIR DEL GT Y LAS SECCIONES DE LA PC##############################
-########################################################################################################################
+    def __calculate_pcs_bb(self):
+        """
+        Calculate the pointcloud that correspond to the bounding box of the detections #and store only the firsts three dimensions.
+        """
+        self.pcl = np.delete(self.pcl,np.where(self.pcl_projected_filter),axis=1)
+        #self.pcl = self.pcl[:3,:]
+        pcl_bbs = list(map(lambda filterbb: np.delete(self.pcl,np.where(filterbb),axis=1), self.pcl_projected_bbs_filters))
+        self.pcl_bbs = pcl_bbs
+
+    def get_pcs_bb(self):
+        """
+        Get the pointcloud that correspond to the bounding box of the detections.
+        """
+        self.__calculate_pcs_bb()
+        return self.pcl_bbs, self.detections
