@@ -1,6 +1,7 @@
 import os
 
 import torch
+import numpy as np
 
 from distance_approximation import DistanceApprox
 from pcl_img_utils import Pcl_Img_Utils
@@ -9,6 +10,7 @@ class Detector3D:
 
     def set_calibration_matrices(self, matrices):
         self.P2, self.R0_rect, self.Tr_velo_to_cam = matrices
+        self.Tr_cam_to_velo = np.linalg.inv(self.Tr_velo_to_cam)
 
     def set_image_pointcloud(self, img_pcl):
         self.img, self.pcl = img_pcl
@@ -59,7 +61,8 @@ class Detector3D:
         """
         Approximate the distance of the detections.
         """
-        self.pcl_img_utils = Pcl_Img_Utils(self.pcl, self.img, self.P2, self.R0_rect, self.Tr_velo_to_cam, self.yolo_detections)
+        self.pcl_img_utils = Pcl_Img_Utils(self.pcl, self.img, self.P2, self.R0_rect, self.Tr_velo_to_cam,
+                                           self.Tr_cam_to_velo, self.yolo_detections)
         self.distance_approx = DistanceApprox(self.pcl_img_utils)
         self.distance_approx.approximate_distance()
 

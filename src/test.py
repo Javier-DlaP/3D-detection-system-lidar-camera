@@ -3,7 +3,7 @@ from detecction_system import Detector3D
 from distance_approx_functions import *
 
 PATH_KITTI = '/media/robesafe/SSD_SATA/KITTI_DATASET/'
-n_frames = 2
+n_frames = 4
 
 # Load the KITTI detector and the detection system
 kitti_detector = KittiDetector3D(PATH_KITTI)

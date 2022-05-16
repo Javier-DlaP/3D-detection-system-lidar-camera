@@ -1,14 +1,20 @@
-from time import time
+import time
 import numpy as np
+from scipy.optimize import fsolve
 
 class Pcl_Img_Utils:
 
-    def __init__(self, pcl, img, P2, R0_rect, Tr_velo_to_cam, detections):
+    def __init__(self, pcl, img, P2, R0_rect, Tr_velo_to_cam, Tr_cam_to_velo, detections):
         self.pcl = pcl
         self.img = img
         self.P2 = P2
         self.R0_rect = R0_rect
+        self.P2_R0_rect = self.P2 * self.R0_rect
         self.Tr_velo_to_cam = Tr_velo_to_cam
+        self.Tr_cam_to_velo = Tr_cam_to_velo
+        self.detections = detections
+
+    def set_detections(self, detections):
         self.detections = detections
     
     def calculate_point_cloud_projected(self):
@@ -24,6 +30,8 @@ class Pcl_Img_Utils:
         # Transform the points to the camera frame
         self.pcl = self.Tr_velo_to_cam * velo
         cam = self.P2 * self.R0_rect * self.pcl
+        # self.pcl = velo
+        # cam = self.P2 * self.R0_rect * self.Tr_velo_to_cam * velo
         cam[:2] /= cam[2,:]
         # Create a mask with the points that are not on the image
         filter_cam = ~((cam[0,:]<self.img.size[0]) & (cam[0,:]>=0) & (cam[1,:]<self.img.size[1]) | (cam[1,:]>=0))
@@ -82,16 +90,139 @@ class Pcl_Img_Utils:
 
     def __calculate_pcs_bb(self):
         """
-        Calculate the pointcloud that correspond to the bounding box of the detections #and store only the firsts three dimensions.
+        Calculate the pointcloud that correspond to the bounding box of the detections.
         """
         self.pcl = np.delete(self.pcl,np.where(self.pcl_projected_filter),axis=1)
         #self.pcl = self.pcl[:3,:]
-        pcl_bbs = list(map(lambda filterbb: np.delete(self.pcl,np.where(filterbb),axis=1), self.pcl_projected_bbs_filters))
+        #pcl_bbs = list(map(lambda filterbb: np.delete(self.pcl.copy(),np.where(filterbb),axis=1), self.pcl_projected_bbs_filters))
+        pcl_bbs = []
+        # Apply filters to the pointcloud and save the points that are on the bb
+        for filterbb in self.pcl_projected_bbs_filters:
+            pcl_bbs.append(np.delete(self.pcl,np.where(filterbb),axis=1))
+            self.pcl = np.delete(self.pcl,np.where(~filterbb),axis=1)
         self.pcl_bbs = pcl_bbs
 
-    def get_pcs_bb(self):
+    def __solve_equation(self, q):
         """
-        Get the pointcloud that correspond to the bounding box of the detections.
+        Auxiliary function to solve the equation for obtaining the points 3d.
+        """
+        xi, yi, d = q
+        def equations(p):
+            xc, yc, zc, w = p
+            eq1 = (self.P2_R0_rect[0,0]*xc + self.P2_R0_rect[0,1]*yc + self.P2_R0_rect[0,2]*zc + self.P2_R0_rect[0,3])/ xi - w
+            eq2 = (self.P2_R0_rect[1,0]*xc + self.P2_R0_rect[1,1]*yc + self.P2_R0_rect[1,2]*zc + self.P2_R0_rect[1,3])/ yi - w
+            eq3 = (self.P2_R0_rect[2,0]*xc + self.P2_R0_rect[2,1]*yc + self.P2_R0_rect[2,2]*zc + self.P2_R0_rect[2,3]) - w
+            eq4 = xc**2 + yc**2 + zc**2 - d**2
+            return (eq1,eq2,eq3,eq4)
+        
+        values = fsolve(equations, (0,0,0,0))
+        return values
+
+    def __calculate_points_3d(self, noise_f = lambda x: x):
+        """
+        Calculate the points 3d from a 2d point and the distance to that point.
+        """
+        # Calculate xmean and ymean in the detection dataframe
+        self.detections['xmean'] = (self.detections['xmin'] + self.detections['xmax'])/2
+        self.detections['ymean'] = (self.detections['ymin'] + self.detections['ymax'])/2
+
+        # Apply the noise to the points
+        self.detections['distance_ensemble_noise'] = self.detections.apply(lambda x: noise_f(x['distance_ensemble']), axis=1)
+
+        # Get the points 2d from the detections with format [(xmean,ymean,distance),...]
+        points_2d = self.detections[['xmean','ymean','distance_ensemble_noise']].values
+        
+        # Solve the equation to get the points 3d
+        points_3d = list(map(self.__solve_equation, points_2d))
+
+        self.points_3d = points_3d
+
+    def get_points_3d(self, noise_f = lambda x: x):
+        """
+        Get the points 3d from a 2d point and the distance to that point.
+        """
+        self.__calculate_points_3d(noise_f = noise_f)
+        return self.points_3d
+
+    def __calculate_gt_points_3d(self):
+        """
+        Calculate the points 3d from the detections dataframe.
+        """
+        # Create a numpy array with zeros that has the same length as the detections dataframe
+        zeros = np.zeros((self.detections.shape[0]))
+
+        # Create a numpy array with the points 3d
+        points_3d = np.array([np.asarray(self.detections['x'].tolist()),
+                              np.asarray(self.detections['y'].tolist()),
+                              np.asarray(self.detections['z'].tolist()), zeros], dtype=np.float32).T.tolist()
+        self.points_3d = points_3d
+
+    def get_gt_points_3d(self):
+        """
+        Get the points 3d from the detections dataframe.
+        """
+        self.__calculate_gt_points_3d()
+        return self.points_3d
+
+    def __translate_pcs_bb(self, points_3d):
+        """
+        Translate each pcl_bb to the point_3d.
+        """
+        points_3d = np.array(points_3d).reshape(len(points_3d),4).T
+        # Change the fourth column to 0 (to not substract by the fourth dimension)
+        points_3d[3,:] = 0
+        points_3d = np.reshape(np.array(points_3d).T,(points_3d.shape[1],4,1))
+        # Translate each pcl_bb to each point3d
+        pcl_bbs = list(map(lambda pcl_bb, point_3d: pcl_bb - point_3d, self.pcl_bbs, points_3d))
+        self.pcl_bbs = pcl_bbs
+
+    def __transform_pcl_cam2velo(self):
+        """
+        Apply the Tr_cam_to_velo transformation matrix to the pointcloud frustum
+        """
+        # Apply the transformation matrix to the pointcloud frustum
+        pcl_bbs = list(map(lambda pcl_bb: np.dot(self.Tr_cam_to_velo,pcl_bb), self.pcl_bbs))
+        self.pcl_bbs = pcl_bbs
+
+    def __rotate_pcl_bb_y(self, points3d):
+        """
+        Rotate each pcl_bb to the point_3d in the y axis.
+        """
+        # Get the angle between the point3d and (0,0,0) on the y axis
+        angles = list(map(lambda point3d: -np.arctan2(point3d[0],point3d[2]), points3d))
+        # Get the rotation over the y axis (up)
+        rots_y = list(map(lambda angle: np.array([[np.cos(angle),0,np.sin(angle),0],
+                                                  [0,1,0,0],
+                                                  [-np.sin(angle),0,np.cos(angle),0],
+                                                  [0,0,0,1]]), angles))
+        # Apply the rotation over the y axis in the pcl_bb
+        pcl_bbs = list(map(lambda pcl_bb, rot_y: np.dot(rot_y,pcl_bb), self.pcl_bbs, rots_y))
+        # Apply the rotation over the point3d
+        points3d = list(map(lambda point3d, rot_y: np.dot(rot_y,point3d), points3d, rots_y))
+        self.pcl_bbs = pcl_bbs
+        return points3d, angles
+
+    def get_frustum(self):
+        """
+        Get the frustum that correspond to the bounding box of the detections.
         """
         self.__calculate_pcs_bb()
-        return self.pcl_bbs, self.detections
+        points3d = self.get_points_3d()
+        points3d_, rots_y = self.__rotate_pcl_bb_y(points3d)
+        self.__translate_pcs_bb(points3d_)
+        return self.pcl_bbs, points3d, rots_y
+  
+    def get_gt_frustum(self, noise_distance_f):
+        """
+        Get the frustum that correspond to the bounding box of the detections.
+        """
+        start = time.time()
+        self.__calculate_pcs_bb()
+        points3d = self.get_points_3d(noise_f = noise_distance_f)
+        #points3d = self.get_gt_points_3d()
+        points3d_, rots_y = self.__rotate_pcl_bb_y(points3d)
+        self.__translate_pcs_bb(points3d_)
+        end = time.time()
+        pcl_bbs_cam = self.pcl_bbs.copy()
+        self.__transform_pcl_cam2velo()
+        return self.pcl_bbs, pcl_bbs_cam, points3d, rots_y, end-start
