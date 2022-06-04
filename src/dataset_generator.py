@@ -7,22 +7,32 @@ import numpy as np
 import random
 from PIL import Image
 from tqdm import tqdm
+import random
+import subprocess
 
 from kitti_detector_system import KittiDetector3D
 from pcl_img_utils import Pcl_Img_Utils
-
-PATH_KITTI = '/media/robesafe/SSD_SATA/KITTI_DATASET/'
 
 def main():
 
     # Parse the arguments
     parser = argparse.ArgumentParser()
+    parser.add_argument("-pf", "--previous_folder", help="folder where KITTI dataset is stored", type=str, default='/media/robesafe/SSD_SATA/KITTI_DATASET/')
     parser.add_argument("-f", "--folder", help="folder to store the new dataset", type=str, default='/media/robesafe/SSD_SATA/KITTI_FRUSTUM_DATASET/')
-    parser.add_argument("-nbb", "--noise_bb", help="max noise in pixels that can be added", type=float, default=5)
-    parser.add_argument("-nd1", "--sd_noise_distance", help="standard deviation of the noise in the distance", type=float, default=3.0)
-    parser.add_argument("-nd2", "--max_noise_distance", help="max distance error in distance", type=float, default=5.0)
+    parser.add_argument("-nbb", "--noise_bb", help="max noise in pixels that can be added", type=float, default=2)
+    parser.add_argument("-nd", "--noise_distance", help="max noise in the distance that can be added", type=float, default=5)
     parser.add_argument("-r", "--repeat", help="repeat n times the dataset", type=int, default=1)
+    parser.add_argument("-n", "--normalize", help="normalization of class distribution", type=str, default=False)
+    parser.add_argument("-md", "--max_distance", help="maximum distance to filtrate the pointclouds", type=float, default=5)
     args = parser.parse_args()
+    if args.normalize == "True":
+        args.normalize = True
+    elif args.normalize == "False" or args.normalize == False:
+        args.normalize = False
+    else:
+        print('Input a boolean value to -n/--normalize flag')
+        exit(1)
+        
 
     # Remove the previous folder
     os.system('rm -rf '+args.folder)
@@ -32,27 +42,41 @@ def main():
     os.mkdir(args.folder+'image_2/')
     os.mkdir(args.folder+'calib/')
     os.mkdir(args.folder+'velodyne/')
-    os.mkdir(args.folder+'velodyne_cam/')
     os.mkdir(args.folder+'label_2/')
+    os.mkdir(args.folder+'ImageSets/')
+    subprocess.run(['touch',args.folder+'ImageSets/train.txt'])
+    subprocess.run(['touch',args.folder+'ImageSets/val.txt'])
 
     # Copy one of the calibration files to the new dataset folder
-    os.system('cp '+PATH_KITTI+'calib/000000.txt '+args.folder+'calib/')
+    os.system('cp '+args.previous_folder+'calib/000000.txt '+args.folder+'calib/')
 
     # Create the KittiDetector3D object
-    kitti_detector = KittiDetector3D(PATH_KITTI)
+    kitti_detector = KittiDetector3D(args.previous_folder)
 
     # Create a Gaussian function to add noise to the distance value
-    sd_noise_distance = args.sd_noise_distance
-    max_noise_distance = args.max_noise_distance
-    noise_distance_f = lambda x: min(x+max_noise_distance, max(x-max_noise_distance, np.random.normal(x, sd_noise_distance, 1)[0]))
+    noise_distance = args.noise_distance
+    noise_distance_f = lambda x: random.uniform(x + noise_distance, x - noise_distance)
 
     # Create a random noise function to add noise to the bounding box
     noise_bb = args.noise_bb
     noise_bb_f = lambda x: random.uniform(x + noise_bb, x - noise_bb)
 
+    # Calculate the number of objects per type
+    n_objects = 1
+    n_car, n_pedestrian, n_cyclist = 1, 1, 1
+    if args.normalize:
+        n_objects, (n_car, n_pedestrian, n_cyclist) = get_n_objects(args.previous_folder)
+
+    # Calculate the probability to get other object of that type
+    p_car = n_car/n_objects
+    p_pedestrian = n_pedestrian/n_objects
+    p_cyclist = n_cyclist/n_objects
+    max_p_type = max(p_car, p_pedestrian, p_cyclist)
+    p_dict = {'Car':p_car, 'Pedestrian':p_pedestrian, 'Cyclist':p_cyclist}
+
     # Calculate number of frames in the dataset
-    n_frames = get_n_frames()
-    #n_frames=10
+    #n_frames = get_n_frames(args.previous_folder)
+    n_frames=10
 
     # Create loading bar
     pbar = tqdm(total=n_frames*args.repeat)
@@ -61,83 +85,104 @@ def main():
     time_list = []
 
     id_dataset = 0
-    for _ in range(args.repeat):
-        for i in range(n_frames):
-            # Load the calibration matrices, the pointcloud and the image
-            P2, R0_rect, Tr_velo_to_cam = kitti_detector.get_id_calib(i)
-            Tr_cam_to_velo = np.linalg.inv(Tr_velo_to_cam)
-            img, pcl = kitti_detector.get_id_img_pcl(i)
+    for i in range(n_frames):
+        # Load the calibration matrices, the pointcloud and the image
+        P2, R0_rect, Tr_velo_to_cam = kitti_detector.get_id_calib(i)
+        Tr_cam_to_velo = np.linalg.inv(Tr_velo_to_cam)
+        img, pcl = kitti_detector.get_id_img_pcl(i)
 
-            df = load_kitti_groundtruth(i)
+        df = load_kitti_groundtruth(i, args.previous_folder)
 
-            # Calculate the distance between the object and the camera
-            df['distance_ensemble'] = (df.apply(lambda row: distance([0,0,0],[row['x'],row['y'],row['z']]), axis=1))
+        # Calculate the distance between the object and the camera
+        df['distance_ensemble'] = (df.apply(lambda row: distance([0,0,0],[row['x'],row['y'],row['z']]), axis=1))
+        
+        # Apply error functions to the bounding box
+        df['xmin'] = df.apply(lambda row: noise_bb_f(row['xmin']), axis=1)
+        df['ymin'] = df.apply(lambda row: noise_bb_f(row['ymin']), axis=1)
+        df['xmax'] = df.apply(lambda row: noise_bb_f(row['xmax']), axis=1)
+        df['ymax'] = df.apply(lambda row: noise_bb_f(row['ymax']), axis=1)
 
-            # Apply error functions to the distance
-            # df['distance_ensemble'] = df.apply(lambda row: noise_distance_f(row['distance_ensemble']), axis=1)
-            
-            # Apply error functions to the bounding box
-            df['xmin'] = df.apply(lambda row: noise_bb_f(row['xmin']), axis=1)
-            df['ymin'] = df.apply(lambda row: noise_bb_f(row['ymin']), axis=1)
-            df['xmax'] = df.apply(lambda row: noise_bb_f(row['xmax']), axis=1)
-            df['ymax'] = df.apply(lambda row: noise_bb_f(row['ymax']), axis=1)
+        # Order the dataframe by distance
+        df = df.sort_values(by='distance_ensemble')
 
-            # Order the dataframe by distance
-            df = df.sort_values(by='distance_ensemble')
+        # Reset the indices of the dataframe
+        df.reset_index(drop=True, inplace=True)
 
-            # Reset the indices of the dataframe
-            df.reset_index(drop=True, inplace=True)
+        # Create the Pcl_Img_Utils object
+        pcl_img_utils = Pcl_Img_Utils(pcl, img, P2, R0_rect, Tr_velo_to_cam, Tr_cam_to_velo, df)
 
-            # Create the Pcl_Img_Utils object
-            pcl_img_utils = Pcl_Img_Utils(pcl, img, P2, R0_rect, Tr_velo_to_cam, Tr_cam_to_velo, df)
+        # Get the frustum pointclouds
+        pcl_img_utils.calculate_point_cloud_projected()
+        pcl_img_utils.calculate_projected_pcs_bb()
+        frustum_pcls, points_3d, angles, compute_time = pcl_img_utils.get_gt_frustum(noise_distance_f, args.max_distance)
 
-            # Get the frustum pointclouds
-            pcl_img_utils.calculate_point_cloud_projected()
-            pcl_img_utils.calculate_projected_pcs_bb()
-            frustum_pcls, frustum_plcs_cam, points3d, rots_y, compute_time = pcl_img_utils.get_gt_frustum(noise_distance_f)
+        # Save the compute_time in the time_list
+        time_list.append(compute_time)
 
-            # Save the compute_time in the time_list
-            time_list.append(compute_time)
+        # Convert df[['x', 'y', 'z']] to a numpy array of shape (n_objects, 3)
+        points3d = np.array(df[['x', 'y', 'z']]).reshape((-1,3))
+        # Add column to points3d with all 1's
+        points3d = np.hstack((points3d, np.ones((points3d.shape[0], 1))))
+        # Transform to LiDAR coordinate system
+        points3d = list(map(lambda point3d: np.array(point3d).reshape(4,1), points3d))
+        points3d = list(map(lambda point3d: np.dot(Tr_cam_to_velo,point3d), points3d))
+        # Rotate points3d over 
+        rots_z = list(map(lambda angle: np.array([[np.cos(angle),-np.sin(angle),0,0],
+                                                  [np.sin(angle),np.cos(angle),0,0],
+                                                  [0,0,1,0],
+                                                  [0,0,0,1]], dtype=np.float), angles))
+        points3d = np.array(list(map(lambda point3d, rot_z: np.dot(rot_z,point3d), points3d, rots_z)))
 
-            # Substract each point3d from (x, y, z) on the dataset
-            df['x'] = list(map(lambda x, point3d: x-point3d[0], df['x'].tolist(), points3d))
-            df['y'] = list(map(lambda y, point3d: y-point3d[1], df['y'].tolist(), points3d))
-            df['z'] = list(map(lambda z, point3d: z-point3d[2], df['z'].tolist(), points3d))
+        # Reshape the points_3d
+        points_3d = np.array(points_3d).reshape(-1,4).T
+        points_3d = np.reshape(np.array(points_3d).T,(points_3d.shape[1],4,1))
 
-            # Get the rotation over the y axis (up)
-            rot_matrix = list(map(lambda angle: np.array([[np.cos(angle),0,np.sin(angle),0],
-                                                    [0,1,0,0],
-                                                    [-np.sin(angle),0,np.cos(angle),0],
-                                                    [0,0,0,1]]), rots_y))
-            # Convert df[['x', 'y', 'z']] to a numpy array of shape (n_objects, 3)
-            points3d = np.array(df[['x', 'y', 'z']])
-            # Add column to points3d with all 1's
-            points3d = np.hstack((points3d, np.ones((points3d.shape[0], 1))))
-            # Multiply points3d by the rotation matrix
-            points3d = list(map(lambda point3d, rot_y: np.dot(rot_y,point3d), points3d, rot_matrix))
-            # Get the value of the x, y and z from points3d
-            df['x'] = list(map(lambda point3d: point3d[0], points3d))
-            df['y'] = list(map(lambda point3d: point3d[1], points3d))
-            df['z'] = list(map(lambda point3d: point3d[2], points3d))
+        points3d = np.array(list(map(lambda point3d: np.dot(Tr_velo_to_cam,point3d), points3d)))
+        matrix = np.array([[0,1,0,0],[0,0,1,0],[1,0,0,0],[0,0,0,1]])
+        print(list(map(lambda point3d: np.dot(Tr_velo_to_cam,point3d), points_3d)))
+        # Translate the pointcloud
+        points_3d = list(map(lambda point3d: np.dot(Tr_velo_to_cam,point3d), points_3d))
+        for point_3d in points_3d:
+            point_3d[0] = 0
+        points3d = np.array(list(map(lambda point3d, point_3d: point3d - point_3d, points3d, points_3d)))
 
-            # Add rots_y to each value of 'ry' in the dataframe
-            df['ry'] = list(map(lambda ry, rot_y: ry+rot_y, df['ry'].tolist(), rots_y))
+        # Transform to camera coordinate system
+        #points3d = np.array(list(map(lambda point3d: np.dot(Tr_velo_to_cam,point3d), points3d)))
+        # Store in the dataframe
+        df['x'] = points3d[:,0].flatten().tolist()
+        df['y'] = points3d[:,1].flatten().tolist()
+        df['z'] = points3d[:,2].flatten().tolist()
 
-            # Store the first id os this frame
-            first_id_frame = id_dataset
+        # Add angles to each value of 'ry' in the dataframe
+        #print(float(angles[0].flatten()))
+        df['ry'] = list(map(lambda ry, angle: ry-float(angle.flatten()), df['ry'].tolist(), angles))
 
-            # Check if the frame is part of the training or validation set (by looking into the ImageSets folder)
-            training = None
-            if os.path.exists(args.folder+'ImageSets/train.txt'):
-                with open(args.folder+'ImageSets/train.txt', 'r') as f:
-                    lines = f.readlines()
-                    if str(i)+'.png' in lines:
-                        training = True
-                    else:
-                        training = False
+        # Store the first id os this frame
+        first_id_frame = id_dataset
 
-            # Iterate over all the objects in the dataframe
-            for index, row in df.iterrows():
+        # Check if the frame is part of the training or validation set (by looking into the ImageSets folder)
+        training = None
+        if os.path.exists(args.previous_folder+'ImageSets/train.txt'):
+            with open(args.previous_folder+'ImageSets/train.txt', 'r') as f:
+                lines = f.readlines()
+                lines = list(map(lambda x: x.split('/')[-1][:-1], lines))
+                if str(i).zfill(6)+'.png' in lines:
+                    training = True
+                else:
+                    training = False
+
+        # Iterate over all the objects in the dataframe
+        for index, row in df.iterrows():
+
+            # Check if the pointcloud is empty
+            if frustum_pcls[index].size == 0:
+                continue
+
+            # Check times to calculate each object
+            times = max_p_type/p_dict[row['type']]
+            times_ = random.uniform(0,1)<=times%1
+            times = times//1+times_
+            for repetition in range(int(times*args.repeat)):
 
                 # Save the frustum pointcloud with all the values as float32 in a binary file
                 pcl_file = args.folder+'velodyne/'+str(id_dataset).zfill(6)+'.bin'
@@ -147,17 +192,9 @@ def main():
                 with open(pcl_file, 'wb') as f:
                     f.write(pcl_frustum)
 
-                # Save the frustum pointcloud in camera coordinate system with all the values as float32 in a binary file
-                pcl_file = args.folder+'velodyne_cam/'+str(id_dataset).zfill(6)+'.bin'
-                pcl_frustum = frustum_plcs_cam[index]
-                pcl_frustum = np.array(pcl_frustum).T.astype(np.float32).flatten()
-                # Save the numpy array values as a binary file
-                with open(pcl_file, 'wb') as f:
-                    f.write(pcl_frustum)
-
                 # Save the image
                 img_file = args.folder+'image_2/'+str(id_dataset).zfill(6)+'.png'
-                if index == 0:
+                if index == 0 and repetition == 0:
                     img.save(img_file)
                 else:
                     # Use of symbolic links to save the images
@@ -165,8 +202,8 @@ def main():
 
                 # Save the calibration file from the original dataset
                 calib_file = args.folder+'calib/'+str(id_dataset).zfill(6)+'.txt'
-                if index == 0:
-                    os.system('cp '+PATH_KITTI+'calib/'+str(i).zfill(6)+'.txt '+calib_file)
+                if index == 0 and repetition == 0:
+                    os.system('cp '+args.previous_folder+'calib/'+str(i).zfill(6)+'.txt '+calib_file)
                 else:
                     # Use of symbolic links to avoid copying the calibration files
                     os.system('ln -s '+args.folder+'calib/'+str(first_id_frame).zfill(6)+'.txt '+calib_file)
@@ -186,9 +223,17 @@ def main():
                             f.write(str(elem))
                     f.write('\n')
 
+                # Write on the correspoding ImageSet file
+                if training:
+                    with open(args.folder+'ImageSets/train.txt', 'a') as f:
+                        f.write(img_file+'\n')
+                else:
+                    with open(args.folder+'ImageSets/val.txt', 'a') as f:
+                        f.write(img_file+'\n')
+
                 id_dataset += 1
 
-            pbar.update(1)
+        pbar.update(1)
     
     # Describe the metrics of the time_list
     print('\n')
@@ -199,43 +244,28 @@ def main():
     print('Std time: '+str(np.std(time_list)))
     print('\n')
 
+    # Create simbolic link to a training folder
+    os.mkdir(args.folder+'training/')
+    os.system('cd '+args.folder+'training/; ln -s ../* .')
+
 def distance(p1, p2):
     """
     Calculates the distance between three points in 3D.
     """
     return math.sqrt((p1[0]-p2[0])**2+(p1[1]-p2[1])**2+(p1[2]-p2[2])**2)
 
-def get_n_objects():
-    """
-    Returns the number of objects that are 'Car', 'Pedestrian' or 'Cyclist' in the dataset.
-    """
-    print("Calculating the number of objects...")
-    n_frames = get_n_frames()
-    # Create loading bar
-    pbar = tqdm(total=n_frames)
-    n_objects = 0
-    for i in range(n_frames):
-        df = load_kitti_groundtruth(i)
-        n_objects += len((df[(df['type'] == 'Car')|
-                         (df['type'] == 'Pedestrian')|
-                         (df['type'] == 'Cyclist')]))
-        pbar.update(1)
-    pbar.close()
-    print("Number of objects: ", n_objects)
-    return n_objects
-
-def get_n_frames():
+def get_n_frames(previous_folder):
     """
     Returns the number of frames in the KITTI dataset.
     """
-    return len(os.listdir(PATH_KITTI+'label_2/'))
+    return len(os.listdir(previous_folder+'label_2/'))
 
-def load_kitti_groundtruth(id_frame):
+def load_kitti_groundtruth(id_frame, previous_folder):
     """
     Loads the groundtruth data from the groundtruth data file.
     """
     name = '%06d'%id_frame
-    gt_file = PATH_KITTI+'label_2/'+name+'.txt'
+    gt_file = previous_folder+'label_2/'+name+'.txt'
 
     col = ['type','truncated','occluded','alpha','xmin','ymin','xmax','ymax','height','width','length','x','y','z','ry']
 
@@ -244,6 +274,30 @@ def load_kitti_groundtruth(id_frame):
     df = df[(df['type'] == 'Car') | (df['type'] == 'Cyclist') | (df['type'] == 'Pedestrian')]
 
     return df
+
+def get_n_objects(previous_folder):
+    """
+    Returns the number of objects that are 'Car', 'Pedestrian' or 'Cyclist' in the dataset.
+    """
+    print("Calculating the number of objects...")
+    n_frames = get_n_frames(previous_folder)
+    # Create loading bar
+    pbar = tqdm(total=n_frames)
+    n_objects = 0
+    n_car, n_pedestrian, n_cyclist = 0, 0, 0
+    for i in range(n_frames):
+        df = load_kitti_groundtruth(i, previous_folder)
+        n_objects += len((df[(df['type'] == 'Car')|
+                         (df['type'] == 'Pedestrian')|
+                         (df['type'] == 'Cyclist')]))
+        n_car += len(df[df['type'] == 'Car'])
+        n_pedestrian += len(df[df['type'] == 'Pedestrian'])
+        n_cyclist += len(df[df['type'] == 'Cyclist'])
+        pbar.update(1)
+    pbar.close()
+    print("Number of objects: ", n_objects)
+    n_types = (n_car, n_pedestrian, n_cyclist)
+    return n_objects, n_types
     
 if __name__ == '__main__':
     main()
