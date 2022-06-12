@@ -23,7 +23,7 @@ def main():
     parser.add_argument("-nd", "--noise_distance", help="max noise in the distance that can be added", type=float, default=5)
     parser.add_argument("-r", "--repeat", help="repeat n times the dataset", type=int, default=1)
     parser.add_argument("-n", "--normalize", help="normalization of class distribution", type=str, default=False)
-    parser.add_argument("-md", "--max_distance", help="maximum distance to filtrate the pointclouds", type=float, default=5)
+    parser.add_argument("-md", "--max_distance", help="maximum distance to filtrate the pointclouds", type=float, default=5.5)
     args = parser.parse_args()
     if args.normalize == "True":
         args.normalize = True
@@ -88,7 +88,6 @@ def main():
     for i in range(n_frames):
         # Load the calibration matrices, the pointcloud and the image
         P2, R0_rect, Tr_velo_to_cam = kitti_detector.get_id_calib(i)
-        Tr_cam_to_velo = np.linalg.inv(Tr_velo_to_cam)
         img, pcl = kitti_detector.get_id_img_pcl(i)
 
         df = load_kitti_groundtruth(i, args.previous_folder)
@@ -109,12 +108,12 @@ def main():
         df.reset_index(drop=True, inplace=True)
 
         # Create the Pcl_Img_Utils object
-        pcl_img_utils = Pcl_Img_Utils(pcl, img, P2, R0_rect, Tr_velo_to_cam, Tr_cam_to_velo, df)
+        pcl_img_utils = Pcl_Img_Utils(pcl, img, P2, R0_rect, Tr_velo_to_cam, df)
 
         # Get the frustum pointclouds
         pcl_img_utils.calculate_point_cloud_projected()
         pcl_img_utils.calculate_projected_pcs_bb()
-        frustum_pcls, points_3d, angles, compute_time = pcl_img_utils.get_gt_frustum(noise_distance_f, args.max_distance)
+        frustum_pcls, points3d_det, angles, compute_time = pcl_img_utils.get_gt_frustum(noise_distance_f, args.max_distance)
 
         # Save the compute_time in the time_list
         time_list.append(compute_time)
@@ -125,37 +124,29 @@ def main():
         points3d = np.hstack((points3d, np.ones((points3d.shape[0], 1))))
         # Transform to LiDAR coordinate system
         points3d = list(map(lambda point3d: np.array(point3d).reshape(4,1), points3d))
-        points3d = list(map(lambda point3d: np.dot(Tr_cam_to_velo,point3d), points3d))
-        # Rotate points3d over 
-        rots_z = list(map(lambda angle: np.array([[np.cos(angle),-np.sin(angle),0,0],
-                                                  [np.sin(angle),np.cos(angle),0,0],
-                                                  [0,0,1,0],
+
+        # Rotate points3d over z
+        rots_z = list(map(lambda angle: np.array([[np.cos(angle),0,np.sin(angle),0],
+                                                  [0,1,0,0],
+                                                  [-np.sin(angle),0,np.cos(angle),0],
                                                   [0,0,0,1]], dtype=np.float), angles))
         points3d = np.array(list(map(lambda point3d, rot_z: np.dot(rot_z,point3d), points3d, rots_z)))
 
-        # Reshape the points_3d
-        points_3d = np.array(points_3d).reshape(-1,4).T
-        points_3d = np.reshape(np.array(points_3d).T,(points_3d.shape[1],4,1))
+        # Reshape the points3d_det
+        points3d_det = np.array(points3d_det).reshape(-1,4).T
+        points3d_det[3,:] = 1
+        points3d_det = np.reshape(np.array(points3d_det).T,(points3d_det.shape[1],4,1))
 
-        points3d = np.array(list(map(lambda point3d: np.dot(Tr_velo_to_cam,point3d), points3d)))
-        matrix = np.array([[0,1,0,0],[0,0,1,0],[1,0,0,0],[0,0,0,1]])
-        print(list(map(lambda point3d: np.dot(Tr_velo_to_cam,point3d), points_3d)))
-        # Translate the pointcloud
-        points_3d = list(map(lambda point3d: np.dot(Tr_velo_to_cam,point3d), points_3d))
-        for point_3d in points_3d:
-            point_3d[0] = 0
-        points3d = np.array(list(map(lambda point3d, point_3d: point3d - point_3d, points3d, points_3d)))
-
-        # Transform to camera coordinate system
-        #points3d = np.array(list(map(lambda point3d: np.dot(Tr_velo_to_cam,point3d), points3d)))
+        # Move the pointcloud
+        points3d = np.array(list(map(lambda point3d, point_3d: point3d - point_3d, points3d, points3d_det)))
+        
         # Store in the dataframe
         df['x'] = points3d[:,0].flatten().tolist()
         df['y'] = points3d[:,1].flatten().tolist()
         df['z'] = points3d[:,2].flatten().tolist()
 
         # Add angles to each value of 'ry' in the dataframe
-        #print(float(angles[0].flatten()))
-        df['ry'] = list(map(lambda ry, angle: ry-float(angle.flatten()), df['ry'].tolist(), angles))
+        df['ry'] = list(map(lambda ry, angle: ry+float(angle.flatten()), df['ry'].tolist(), angles))
 
         # Store the first id os this frame
         first_id_frame = id_dataset
@@ -175,7 +166,7 @@ def main():
         for index, row in df.iterrows():
 
             # Check if the pointcloud is empty
-            if frustum_pcls[index].size == 0:
+            if frustum_pcls[index].size < 20:
                 continue
 
             # Check times to calculate each object

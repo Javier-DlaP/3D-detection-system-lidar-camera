@@ -6,14 +6,14 @@ from scipy.optimize import fsolve
 
 class Pcl_Img_Utils:
 
-    def __init__(self, pcl, img, P2, R0_rect, Tr_velo_to_cam, Tr_cam_to_velo, detections):
+    def __init__(self, pcl, img, P2, R0_rect, Tr_velo_to_cam, detections):
         self.pcl = pcl
         self.img = img
         self.P2 = P2
         self.R0_rect = R0_rect
         self.P2_R0_rect = self.P2 * self.R0_rect
         self.Tr_velo_to_cam = Tr_velo_to_cam
-        self.Tr_cam_to_velo = Tr_cam_to_velo
+        self.Tr_cam_to_velo_rect = np.linalg.inv(R0_rect * Tr_velo_to_cam)
         self.detections = detections
 
     def set_detections(self, detections):
@@ -109,6 +109,7 @@ class Pcl_Img_Utils:
         xi, yi, d = q
         def equations(p):
             xc, yc, zc, w = p
+            #xc, yc, zc = min(80,max(0,xc)), min(80,max(0,yc)), min(80,max(0,zc))
             eq1 = (self.P2_R0_rect[0,0]*xc + self.P2_R0_rect[0,1]*yc + self.P2_R0_rect[0,2]*zc + self.P2_R0_rect[0,3])/ xi - w
             eq2 = (self.P2_R0_rect[1,0]*xc + self.P2_R0_rect[1,1]*yc + self.P2_R0_rect[1,2]*zc + self.P2_R0_rect[1,3])/ yi - w
             eq3 = (self.P2_R0_rect[2,0]*xc + self.P2_R0_rect[2,1]*yc + self.P2_R0_rect[2,2]*zc + self.P2_R0_rect[2,3]) - w
@@ -165,42 +166,35 @@ class Pcl_Img_Utils:
         self.__calculate_gt_points_3d()
         return self.points_3d
 
-    def translate_pcs_bb(self, points_3d, pcl_bbs):
+    def move_pcs_bb(self, points_3d, pcl_bbs):
         """
-        Translate each pcl_bb to the point_3d.
+        Move each pcl_bb to the point_3d.
         """
         points_3d = np.array(points_3d).reshape(len(points_3d),4).T
         # Change the fourth column to 0 (to not substract by the fourth dimension)
         points_3d[3,:] = 0
         points_3d = np.reshape(np.array(points_3d).T,(points_3d.shape[1],4,1))
-        # Translate the pointcloud
+        # Move the pointcloud
         pcl_bbs = list(map(lambda pcl_bb, point_3d: pcl_bb - point_3d, pcl_bbs, points_3d))
         return pcl_bbs
 
-    def transform_pcl_cam2velo(self, pcl_bbs):
+    def rotate_pcl_bb_y(self, points3d, pcl_bbs):
         """
-        Apply the Tr_cam_to_velo transformation matrix to the pointcloud frustum
+        Rotate each pcl_bb to the point_3d in the y axis.
         """
-        # Apply the transformation matrix to the pointcloud frustum
-        pcl_bbs = list(map(lambda pcl_bb: np.dot(self.Tr_cam_to_velo,pcl_bb), pcl_bbs))
-        return pcl_bbs
-
-    def rotate_pcl_bb_z(self, points3d, pcl_bbs):
-        """
-        Rotate each pcl_bb to the point_3d in the z axis.
-        """
-        # Get the angle between the point3d and (0,0,0) on the z axis
-        angles = list(map(lambda point3d: -np.arctan2(point3d[1],point3d[0]), points3d))
-        # Get the rotation over the z axis
-        rots_z = list(map(lambda angle: np.array([[np.cos(angle),-np.sin(angle),0,0],
-                                                  [np.sin(angle),np.cos(angle),0,0],
-                                                  [0,0,1,0],
-                                                  [0,0,0,1]], dtype=np.float), angles))
+        # Get the angle between the point3d and (0,0,0) on the y axis
+        anglesy = list(map(lambda point3d: -np.arctan2(point3d[0],point3d[2]), points3d))
+        # Get the rotation over the y axis
+        rots_y = list(map(lambda angle: np.array([[np.cos(angle),0,np.sin(angle),0],
+                                                  [0,1,0,0],
+                                                  [-np.sin(angle),0,np.cos(angle),0],
+                                                  [0,0,0,1]], dtype=np.float), anglesy))
         # Apply the rotation over the y axis in the pcl_bb
-        pcl_bbs = list(map(lambda pcl_bb, rot_z: np.dot(rot_z,pcl_bb), pcl_bbs, rots_z))
+        pcl_bbs = list(map(lambda pcl_bb, rot_z: np.dot(rot_z,pcl_bb), pcl_bbs, rots_y))
         # Apply the rotation over the point3d
-        points3d = list(map(lambda point3d, rot_z: np.dot(rot_z,point3d), points3d, rots_z))
-        return points3d, angles, pcl_bbs
+        points3dy = np.array(list(map(lambda point3d, rot_y: np.dot(rot_y,point3d), points3d, rots_y)))
+
+        return points3dy, anglesy, pcl_bbs
 
     def filtrate_frustums(self, max_distance, pcl_bbs):
         """
@@ -227,18 +221,11 @@ class Pcl_Img_Utils:
         """
         start = time.time()
         pcls_bb = self.get_pcls_bb()
+        pcls_bb = list(map(lambda pcl_bb: np.dot(self.R0_rect,pcl_bb), pcls_bb))
         points3d = self.get_points_3d(noise_f = noise_distance_f)
-        print(points3d)
-        # for point3d in points3d:
-        #     point3d[1] = 0
-        print(points3d)
-        pcls_bb = self.transform_pcl_cam2velo(pcls_bb)
-        points3d = self.transform_pcl_cam2velo(points3d)
-        print(points3d)
-        points3d, rots_z, pcls_bb = self.rotate_pcl_bb_z(points3d, pcls_bb)
-        print(points3d)
-        print("----")
-        pcls_bb = self.translate_pcs_bb(points3d, pcls_bb)
-        end = time.time()
+        points3d, rots_y, pcls_bb = self.rotate_pcl_bb_y(points3d, pcls_bb)
+        pcls_bb = self.move_pcs_bb(points3d, pcls_bb)
+        pcls_bb = list(map(lambda pcl_bb: np.dot(self.Tr_cam_to_velo_rect ,pcl_bb), pcls_bb))
         pcls_bb = self.filtrate_frustums(max_distance, pcls_bb)
-        return pcls_bb, points3d, rots_z, end-start
+        end = time.time()
+        return pcls_bb, points3d, rots_y, end-start
