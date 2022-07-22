@@ -1,0 +1,15 @@
+Voxel dimensions:
+[0.16, 0.16, 4]
+
+Point cloud range:
+10m(error) + 3.9m(anchor car) = 13.9m -> 13.92m
+Cybertruck length = 5.885m -> 5.92m
+pointcloud: [-6.96, -2.96, -2, 6.96, 2.96, 2]
+voxels: [87, 37, 1]
+
+Improvement:
+214272 -> 3219 max voxels
+
+Max number of voxels: 12000 -> 1500 (5.885 (Cybertruck length) / 0.16 (voxel size) **2 = 1353)
+
+Max number of points per voxel: 100 -> 32?
