@@ -1,6 +1,4 @@
-from binascii import a2b_base64
 import time
-from turtle import xcor
 import numpy as np
 from scipy.optimize import fsolve
 
@@ -14,6 +12,16 @@ class Pcl_Img_Utils:
         self.P2_R0_rect = self.P2 * self.R0_rect
         self.Tr_velo_to_cam = Tr_velo_to_cam
         self.Tr_cam_to_velo_rect = np.linalg.inv(R0_rect * Tr_velo_to_cam)
+        self.detections = detections
+
+    def __init__(self, pcl, img, P2, R0_rect, Tr_velo_to_cam, Tr_cam_to_velo, detections):
+        self.pcl = pcl
+        self.img = img
+        self.P2 = P2
+        self.R0_rect = R0_rect
+        self.P2_R0_rect = self.P2 * self.R0_rect
+        self.Tr_velo_to_cam = Tr_velo_to_cam
+        self.Tr_cam_to_velo_rect = Tr_cam_to_velo
         self.detections = detections
 
     def set_detections(self, detections):
@@ -178,7 +186,7 @@ class Pcl_Img_Utils:
         pcl_bbs = list(map(lambda pcl_bb, point_3d: pcl_bb - point_3d, pcl_bbs, points_3d))
         return pcl_bbs
 
-    def rotate_pcl_bb_y(self, points3d, pcl_bbs):
+    def rotate_pcl_bb_y(self, points3d, pcl_bbs, offset):
         """
         Rotate each pcl_bb to the point_3d in the y axis.
         """
@@ -194,28 +202,32 @@ class Pcl_Img_Utils:
         # Apply the rotation over the point3d
         points3dy = np.array(list(map(lambda point3d, rot_y: np.dot(rot_y,point3d), points3d, rots_y)))
 
+        points3dy[:,1] = 0
+        points3dy[:,2] -= offset
+
         return points3dy, anglesy, pcl_bbs
 
-    def filtrate_frustums(self, max_distance, pcl_bbs):
+    def filtrate_frustums(self, max_distance, pcl_bbs, offset):
         """
         Filtrate the pointcloud to eliminate points out of bounds
         """
-        pcl_bbs = list(map(lambda pcl_bb: np.delete(pcl_bb,np.where(abs(pcl_bb[0,:])>max_distance),axis=1), pcl_bbs))
+        pcl_bbs = list(map(lambda pcl_bb: np.delete(pcl_bb,np.where(abs(pcl_bb[0,:]-offset)>max_distance),axis=1), pcl_bbs))
         return pcl_bbs
 
-    # def get_frustum(self, max_distance):
-    #     """
-    #     Get the frustum that correspond to the bounding box of the detections.
-    #     """
-    #     self.__calculate_pcs_bb()
-    #     points3d = self.get_points_3d()
-    #     points3d_, rots_y = self.__rotate_pcl_bb_y(points3d)
-    #     self.__translate_pcs_bb(points3d_)
-    #     self._filtrate_frustums(max_distance)
-    #     self.__transform_pcl_cam2velo()
-    #     return self.pcl_bbs, points3d, rots_y
+    def get_frustum(self, distance):
+        """
+        Get the frustum that correspond to the bounding box of the detections.
+        """
+        pcls_bb = self.get_pcls_bb()
+        pcls_bb = list(map(lambda pcl_bb: np.dot(self.R0_rect,pcl_bb), pcls_bb))
+        points3d = self.get_points_3d()
+        points3d, rots_y, pcls_bb = self.rotate_pcl_bb_y(points3d, pcls_bb, 0)
+        pcls_bb = self.move_pcs_bb(points3d, pcls_bb)
+        pcls_bb = list(map(lambda pcl_bb: np.dot(self.Tr_cam_to_velo_rect ,pcl_bb), pcls_bb))
+        pcls_bb = self.filtrate_frustums(5.5, pcls_bb, 0)
+        return pcls_bb, points3d, rots_y
 
-    def get_gt_frustum(self, noise_distance_f, max_distance):
+    def get_gt_frustum(self, noise_distance_f, max_distance, offset):
         """
         Get the frustum that correspond to the bounding box of the detections.
         """
@@ -223,9 +235,9 @@ class Pcl_Img_Utils:
         pcls_bb = self.get_pcls_bb()
         pcls_bb = list(map(lambda pcl_bb: np.dot(self.R0_rect,pcl_bb), pcls_bb))
         points3d = self.get_points_3d(noise_f = noise_distance_f)
-        points3d, rots_y, pcls_bb = self.rotate_pcl_bb_y(points3d, pcls_bb)
+        points3d, rots_y, pcls_bb = self.rotate_pcl_bb_y(points3d, pcls_bb, offset)
         pcls_bb = self.move_pcs_bb(points3d, pcls_bb)
         pcls_bb = list(map(lambda pcl_bb: np.dot(self.Tr_cam_to_velo_rect ,pcl_bb), pcls_bb))
-        pcls_bb = self.filtrate_frustums(max_distance, pcls_bb)
+        pcls_bb = self.filtrate_frustums(max_distance, pcls_bb, offset)
         end = time.time()
         return pcls_bb, points3d, rots_y, end-start

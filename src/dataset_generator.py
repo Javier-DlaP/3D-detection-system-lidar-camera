@@ -24,6 +24,7 @@ def main():
     parser.add_argument("-r", "--repeat", help="repeat n times the dataset", type=int, default=1)
     parser.add_argument("-n", "--normalize", help="normalization of class distribution", type=str, default=False)
     parser.add_argument("-md", "--max_distance", help="maximum distance to filtrate the pointclouds", type=float, default=5.5)
+    parser.add_argument("-o", "--offset", help="offset in z coordinate (from camera)", type=float, default=0)
     args = parser.parse_args()
     if args.normalize == "True":
         args.normalize = True
@@ -75,8 +76,8 @@ def main():
     p_dict = {'Car':p_car, 'Pedestrian':p_pedestrian, 'Cyclist':p_cyclist}
 
     # Calculate number of frames in the dataset
-    #n_frames = get_n_frames(args.previous_folder)
-    n_frames=10
+    n_frames = get_n_frames(args.previous_folder)
+    #n_frames=100
 
     # Create loading bar
     pbar = tqdm(total=n_frames*args.repeat)
@@ -113,7 +114,7 @@ def main():
         # Get the frustum pointclouds
         pcl_img_utils.calculate_point_cloud_projected()
         pcl_img_utils.calculate_projected_pcs_bb()
-        frustum_pcls, points3d_det, angles, compute_time = pcl_img_utils.get_gt_frustum(noise_distance_f, args.max_distance)
+        frustum_pcls, points3d_det, angles, compute_time = pcl_img_utils.get_gt_frustum(noise_distance_f, args.max_distance, args.offset)
 
         # Save the compute_time in the time_list
         time_list.append(compute_time)
@@ -162,11 +163,17 @@ def main():
                 else:
                     training = False
 
+        first_img_calib = True
         # Iterate over all the objects in the dataframe
         for index, row in df.iterrows():
 
-            # Check if the pointcloud is empty
-            if frustum_pcls[index].size < 20:
+            # Check if the bounding box has points inside it
+            frustum_pcl_index = np.dot(np.dot(R0_rect, Tr_velo_to_cam),frustum_pcls[index].copy())
+            frustum_pcl_index = np.delete(frustum_pcl_index,np.where((frustum_pcl_index[1,:]<float(row['x']-row['length']))|\
+                                                                     (frustum_pcl_index[1,:]>float(row['x']+row['length']))|\
+                                                                     (frustum_pcl_index[0,:]<float(row['z']-row['length']))|\
+                                                                     (frustum_pcl_index[0,:]>float(row['z']+row['length']))),axis=1)
+            if frustum_pcl_index.shape[1] <= 3:
                 continue
 
             # Check times to calculate each object
@@ -185,20 +192,23 @@ def main():
 
                 # Save the image
                 img_file = args.folder+'image_2/'+str(id_dataset).zfill(6)+'.png'
-                if index == 0 and repetition == 0:
+                if first_img_calib and repetition == 0:
                     img.save(img_file)
                 else:
                     # Use of symbolic links to save the images
-                    os.system('ln -s '+args.folder+'image_2/'+str(first_id_frame).zfill(6)+'.png '+img_file)
-
+                    past_img_path = args.folder+'image_2/'+str(first_id_frame).zfill(6)+'.png'
+                    os.symlink(past_img_path, img_file)
+                    
                 # Save the calibration file from the original dataset
                 calib_file = args.folder+'calib/'+str(id_dataset).zfill(6)+'.txt'
-                if index == 0 and repetition == 0:
+                if first_img_calib and repetition == 0:
                     os.system('cp '+args.previous_folder+'calib/'+str(i).zfill(6)+'.txt '+calib_file)
                 else:
                     # Use of symbolic links to avoid copying the calibration files
-                    os.system('ln -s '+args.folder+'calib/'+str(first_id_frame).zfill(6)+'.txt '+calib_file)
+                    past_calib_path = args.folder+'calib/'+str(first_id_frame).zfill(6)+'.txt'
+                    os.symlink(past_calib_path, calib_file)
 
+                    
                 # Save the label file with KITTI format
                 label_file = args.folder+'label_2/'+str(id_dataset).zfill(6)+'.txt'
                 with open(label_file, 'w') as f:
@@ -223,6 +233,7 @@ def main():
                         f.write(img_file+'\n')
 
                 id_dataset += 1
+                first_img_calib = False
 
         pbar.update(1)
     

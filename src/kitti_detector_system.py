@@ -54,7 +54,8 @@ class KittiDetector3D:
         """
         Extracts the image data from the image data file.
         """
-        return Image.open(camera_image_file)
+        im = Image.open(camera_image_file)
+        return im, np.array(im)
 
     def load_groundtruth(self):
         """
