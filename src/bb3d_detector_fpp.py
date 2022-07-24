@@ -50,8 +50,9 @@ class FrustumPP_Detector:
             points = points.T
             dict_voxel = self.voxel_generator.generate(points, max_voxels=500)
 
-            coords = np.pad(dict_voxel['coordinates'], ((0, 0), (1, 0)), mode='constant', constant_values=0)
+            coords = np.pad(dict_voxel['coordinates'], (0, 0), mode='constant', constant_values=0)
             coords = torch.tensor(coords, dtype=torch.int32, device=self.device)
+
             voxels = torch.tensor(dict_voxel['voxels'], dtype=torch.float32, device=self.device)
             num_voxels = torch.tensor(dict_voxel['voxel_num'], dtype=torch.float32, device=self.device)
             num_points = torch.tensor(dict_voxel['num_points_per_voxel'], dtype=torch.int32, device=self.device)
@@ -60,9 +61,9 @@ class FrustumPP_Detector:
                 "anchors": self.anchors.cpu(),
                 "voxels": voxels.cpu(),
                 "num_points": num_points.cpu(),
-                "num_voxels": num_voxels.cpu(),
+                "num_voxels": num_voxels.cpu().reshape([-1]),
                 "coordinates": coords.cpu(),
-                "type": obj_type,
+                "type": [obj_type],
             }
 
             return ff_input
@@ -82,5 +83,4 @@ class FrustumPP_Detector:
             data = example_convert_to_torch(data, self.float_dtype)
             with torch.no_grad():
                 fpp_detections += self.net(data)
-                print(fpp_detections)
         return fpp_detections

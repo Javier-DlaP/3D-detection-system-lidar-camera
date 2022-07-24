@@ -14,14 +14,16 @@ class Pcl_Img_Utils:
         self.Tr_cam_to_velo_rect = np.linalg.inv(R0_rect * Tr_velo_to_cam)
         self.detections = detections
 
-    def __init__(self, pcl, img, P2, R0_rect, Tr_velo_to_cam, Tr_cam_to_velo, detections):
+    def __init__(self, pcl, img, P2, R0_rect, Tr_velo_to_cam, Tr_cam_to_velo, Tr_velo_to_cam_rect, Tr_cam_to_velo_rect, detections):
         self.pcl = pcl
         self.img = img
         self.P2 = P2
         self.R0_rect = R0_rect
         self.P2_R0_rect = self.P2 * self.R0_rect
         self.Tr_velo_to_cam = Tr_velo_to_cam
-        self.Tr_cam_to_velo_rect = Tr_cam_to_velo
+        self.Tr_cam_to_velo = Tr_cam_to_velo
+        self.Tr_velo_to_cam_rect = Tr_velo_to_cam_rect
+        self.Tr_cam_to_velo_rect = Tr_cam_to_velo_rect
         self.detections = detections
 
     def set_detections(self, detections):
@@ -214,7 +216,7 @@ class Pcl_Img_Utils:
         pcl_bbs = list(map(lambda pcl_bb: np.delete(pcl_bb,np.where(abs(pcl_bb[0,:]-offset)>max_distance),axis=1), pcl_bbs))
         return pcl_bbs
 
-    def get_frustum(self, distance):
+    def get_frustum(self):
         """
         Get the frustum that correspond to the bounding box of the detections.
         """
@@ -223,9 +225,47 @@ class Pcl_Img_Utils:
         points3d = self.get_points_3d()
         points3d, rots_y, pcls_bb = self.rotate_pcl_bb_y(points3d, pcls_bb, 0)
         pcls_bb = self.move_pcs_bb(points3d, pcls_bb)
-        pcls_bb = list(map(lambda pcl_bb: np.dot(self.Tr_cam_to_velo_rect ,pcl_bb), pcls_bb))
+        pcls_bb = list(map(lambda pcl_bb: np.dot(self.Tr_cam_to_velo_rect, pcl_bb), pcls_bb))
         pcls_bb = self.filtrate_frustums(5.5, pcls_bb, 0)
+
+        #####################
+        # pcl_file = '/home/robesafe/Javier/kitti_prueba/training/velodyne/000000.bin'
+        # pcl_frustum = pcls_bb[0]
+        # pcl_frustum = np.array(pcl_frustum).T.astype(np.float32).flatten()
+        # # Save the numpy array values as a binary file
+        # with open(pcl_file, 'wb') as f:
+        #     f.write(pcl_frustum)
+        #####################
+
         return pcls_bb, points3d, rots_y
+
+    def get_final_detections(self, prev_points3d, rots_y, fpp_detections):
+        """
+        Transform the detections to the previous location
+        """
+        # Getting the center of the objects
+        fpp_points3d_lidar = list(map(lambda x: np.array([[fpp_detections['x'].tolist()[x]],
+                                                         [fpp_detections['y'].tolist()[x]],
+                                                         [fpp_detections['z'].tolist()[x]], [1.]], dtype=np.float32),
+                                                         list(range(len(fpp_detections)))))
+        # Transform to camera frame
+        fpp_points3d_cam = list(map(lambda fpp_points3d: np.dot(self.Tr_velo_to_cam_rect, fpp_points3d), fpp_points3d_lidar))
+        # Move in the x axis
+        fpp_points3d_cam = fpp_points3d_cam + prev_points3d
+        # Rotate the objects
+        matrix_rots_y = list(map(lambda angle: np.array([[np.cos(-angle),0,np.sin(-angle),0],
+                                                  [0,1,0,0],
+                                                  [-np.sin(-angle),0,np.cos(-angle),0],
+                                                  [0,0,0,1]], dtype=np.float), rots_y))
+        fpp_points3d_cam = list(map(lambda fpp_point3d, rot_z: np.dot(rot_z,fpp_point3d), fpp_points3d_cam, matrix_rots_y))
+        rots_y = list(map(lambda x, y: float(x-y), fpp_detections['rot_y'].tolist(), rots_y))
+        # Save on the dataframe
+        fpp_detections['x'] = np.array(fpp_points3d_cam)[:,0].flatten()
+        fpp_detections['y'] = np.array(fpp_points3d_cam)[:,1].flatten()
+        fpp_detections['z'] = np.array(fpp_points3d_cam)[:,2].flatten()
+        fpp_detections['rot_y'] = rots_y
+
+        return fpp_detections
 
     def get_gt_frustum(self, noise_distance_f, max_distance, offset):
         """

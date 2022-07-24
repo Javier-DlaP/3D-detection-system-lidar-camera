@@ -126,7 +126,7 @@ class DistanceApprox:
             Auxiliary function to approximate the distance of the detections using the ensemble model.
             """
             if pointcloud_distance == None:
-                return height_distance
+                return None
             else:
                 height_2d = bottom2d - top2d
                 height_distance_model, height_2d_model, pointcloud_distance_model, pointcloud_n_points_model = None, None, None, None

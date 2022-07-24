@@ -10,16 +10,20 @@ from bb3d_detector_fpp import FrustumPP_Detector
 from bb2d_detector_yolo import Yolo_Detector
 
 from time import time
+from itertools import compress
 
 class Detector3D:
 
     def __init__(self):
         self.current_dir = os.getcwd()
-        self.time_dict = {'yolov5':[], 'distance_approximation':[], 'frustum_generation':[], 'frustum_pointpillars': []}
+        self.time_dict = {'yolov5':[], 'distance_approximation':[], 'frustum_generation':[], 'frustum_pointpillars': [], 'transforming_detections': []}
+        pd.set_option('display.max_columns', None)
 
     def set_calibration_matrices(self, matrices):
         self.P2, self.R0_rect, self.Tr_velo_to_cam = matrices
         self.Tr_cam_to_velo = np.linalg.inv(self.Tr_velo_to_cam)
+        self.Tr_velo_to_cam_rect = self.R0_rect * self.Tr_velo_to_cam
+        self.Tr_cam_to_velo_rect = np.linalg.inv(self.Tr_velo_to_cam_rect)
 
     def set_image_pointcloud(self, img_pcl):
         img, self.pcl = img_pcl
@@ -44,17 +48,28 @@ class Detector3D:
         t0 = time()
         self.approximate_distance()
         self.time_dict['distance_approximation'].append(time()-t0)
-        if self.detections.shape[0] != 0:
-            # Obtain the frustum points
-            t0 = time()
-            self.calculate_frustum_points()
-            self.time_dict['frustum_generation'].append(time()-t0)
-            # Obtain 3D detections using Frustum Pointpillars
-            t0 = time()
-            self.detect_frustum_pointpillars()
-            self.time_dict['frustum_pointpillars'].append(time()-t0)
-        else:
-            self.final_detections = pd.DataFrame({'type':[],'x':[],'y':[],'z':[],'width':[],'length':[],'heigth':[],'rot_y':[]})
+        # Remove detections without any points
+        self.detections = self.detections.dropna(how='all')
+        # Obtain the frustum points
+        t0 = time()
+        self.calculate_frustum_points()
+        self.time_dict['frustum_generation'].append(time()-t0)
+        # Obtain 3D detections using Frustum Pointpillars
+        t0 = time()
+        self.detect_frustum_pointpillars()
+        self.time_dict['frustum_pointpillars'].append(time()-t0)
+        # Obtain 3D detections using Frustum Pointpillars
+        t0 = time()
+        self.transform_fpp_detections()
+        self.time_dict['transforming_detections'].append(time()-t0)
+
+        if self.detections.shape[0] == 0:
+            self.fpp_detections = pd.DataFrame({'type':[],'x':[],'y':[],'z':[],'width':[],'length':[],'heigth':[],'rot_y':[]})
+
+        self.final_detections = self.detections.join(self.fpp_detections)
+        del self.final_detections['type']
+        self.final_detections['score'] = self.final_detections['score_yolo'] * self.final_detections['score_fpp']
+        #print(self.final_detections)
 
     def load_yolo_model(self, threshold=0.6):
         """
@@ -77,7 +92,7 @@ class Detector3D:
         Preprocess the detections.
         """
         names = ['Car', 'Pedestrian', 'Cyclist']
-        self.detections = pd.DataFrame(data=self.pred, columns=['xmin','ymin','xmax','ymax','score','name'])
+        self.detections = pd.DataFrame(data=self.pred, columns=['xmin','ymin','xmax','ymax','score_yolo','name'])
         self.detections['name'] = list(map(lambda x: names[int(x)], self.detections['name'].tolist()))
         self.detections['complete_bb'] = (self.detections['xmin'] > 0) & (self.detections['xmax'] < self.img.size[0]-1)
 
@@ -86,7 +101,7 @@ class Detector3D:
         Approximate the distance of the detections.
         """
         self.pcl_img_utils = Pcl_Img_Utils(self.pcl, self.img, self.P2, self.R0_rect, self.Tr_velo_to_cam,
-                                           self.Tr_cam_to_velo, self.detections)
+                                           self.Tr_cam_to_velo, self.Tr_velo_to_cam_rect, self.Tr_cam_to_velo_rect, self.detections)
         self.distance_approx = DistanceApprox(self.pcl_img_utils)
         self.distance_approx.approximate_distance()
         self.detections = self.distance_approx.detections
@@ -95,7 +110,13 @@ class Detector3D:
         """
         Calculate the frustum points.
         """
-        self.pcls_bb, self.points3d, self.rots_y = self.pcl_img_utils.get_frustum(self.detections)
+        self.pcls_bb, self.points3d, self.rots_y = self.pcl_img_utils.get_frustum()
+        # Remove pointclouds with less than 3 points
+        fpoints_mask = list(map(lambda x: x.shape[1] >= 3,self.pcls_bb))
+        self.detections = self.detections[fpoints_mask]
+        self.pcls_bb = list(compress(self.pcls_bb,fpoints_mask))
+        self.points3d = self.points3d[fpoints_mask]
+        self.rots_y = list(compress(self.rots_y,fpoints_mask))
 
     def load_fpp_model(self):
         """
@@ -107,12 +128,12 @@ class Detector3D:
 
     def detect_frustum_pointpillars(self):
         """
-        Obtain the detections from the Frustum PointPillars model.
+        Obtain the detections from the Frustum PointPillars model
         """
         self.fpp_detector.load_pointclouds(self.pcls_bb, self.detections['name'].tolist())
         fpp_detections = self.fpp_detector.detect()
 
-        obj_type, x, y, z, width, length, heigth, rot_y = self.detections['name'].tolist(), [], [], [], [], [], [], []
+        obj_type, x, y, z, width, length, heigth, rot_y, scores = self.detections['name'].tolist(), [], [], [], [], [], [], [], []
         for i in range(len(fpp_detections)):
             x.append(float(fpp_detections[i]['box3d_lidar'][0][0]))
             y.append(float(fpp_detections[i]['box3d_lidar'][0][1]))
@@ -121,7 +142,14 @@ class Detector3D:
             length.append(float(fpp_detections[i]['box3d_lidar'][0][4]))
             heigth.append(float(fpp_detections[i]['box3d_lidar'][0][5]))
             rot_y.append(float(fpp_detections[i]['box3d_lidar'][0][6]))
-        self.final_detections = pd.DataFrame({'type':obj_type,'x':x,'y':y,'z':z,'width':width,'length':length,'heigth':heigth,'rot_y':rot_y})
+            scores.append(float(fpp_detections[i]['scores'][0]))
+        self.fpp_detections = pd.DataFrame({'type':obj_type,'x':x,'y':y,'z':z,'heigth':heigth,'width':width,'length':length,'rot_y':rot_y,'score_fpp':scores})
+
+    def transform_fpp_detections(self):
+        """
+        Move and rotate to the original position the fpp_detections
+        """
+        self.fpp_detections = self.pcl_img_utils.get_final_detections(self.points3d, self.rots_y, self.fpp_detections)
 
     def show_times(self):
         """
