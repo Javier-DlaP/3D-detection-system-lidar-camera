@@ -1,15 +1,10 @@
 import numpy as np
-import matplotlib.pyplot as plt
-from pathlib import Path
-from time import time
 import torch
 from torch.utils.data import DataLoader
 from google.protobuf import text_format
-from second.utils import simplevis
 from second.pytorch.train import build_network, example_convert_to_torch
 from second.protos import pipeline_pb2
 from second.utils import config_tool
-from second.pytorch.builder.input_reader_builder import DatasetWrapper
 from second.data.preprocess import merge_second_batch
 from second.data.inference_dataset import InferDataset
 
@@ -27,7 +22,8 @@ class FrustumPP_Detector:
 
     def build_model(self):
         self.train_cfg = self.config.train_config
-        ckpt_path = self.saved_model_path+"voxelnet-321600.tckpt"
+        #ckpt_path = self.saved_model_path+"voxelnet-321600.tckpt"
+        ckpt_path = self.saved_model_path+"voxelnet-435350.tckpt"
         self.net = build_network(self.model_cfg).to(self.device).eval()
         self.net.load_state_dict(torch.load(ckpt_path))
         if self.train_cfg.enable_mixed_precision:

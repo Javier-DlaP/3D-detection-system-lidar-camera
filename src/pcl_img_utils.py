@@ -2,28 +2,26 @@ import time
 import numpy as np
 from scipy.optimize import fsolve
 
+import pandas as pd
+
 class Pcl_Img_Utils:
 
-    def __init__(self, pcl, img, P2, R0_rect, Tr_velo_to_cam, detections):
+    def __init__(self, pcl, img, P2, R0_rect, Tr_velo_to_cam, detections, Tr_cam_to_velo=None, Tr_velo_to_cam_rect=None, Tr_cam_to_velo_rect=None):
+        pd.options.mode.chained_assignment = None
         self.pcl = pcl
         self.img = img
         self.P2 = P2
         self.R0_rect = R0_rect
         self.P2_R0_rect = self.P2 * self.R0_rect
         self.Tr_velo_to_cam = Tr_velo_to_cam
-        self.Tr_cam_to_velo_rect = np.linalg.inv(R0_rect * Tr_velo_to_cam)
-        self.detections = detections
-
-    def __init__(self, pcl, img, P2, R0_rect, Tr_velo_to_cam, Tr_cam_to_velo, Tr_velo_to_cam_rect, Tr_cam_to_velo_rect, detections):
-        self.pcl = pcl
-        self.img = img
-        self.P2 = P2
-        self.R0_rect = R0_rect
-        self.P2_R0_rect = self.P2 * self.R0_rect
-        self.Tr_velo_to_cam = Tr_velo_to_cam
-        self.Tr_cam_to_velo = Tr_cam_to_velo
-        self.Tr_velo_to_cam_rect = Tr_velo_to_cam_rect
-        self.Tr_cam_to_velo_rect = Tr_cam_to_velo_rect
+        if Tr_cam_to_velo is None:
+            self.Tr_cam_to_velo = np.linalg.inv(self.Tr_velo_to_cam)
+            self.Tr_velo_to_cam_rect = self.R0_rect * self.Tr_velo_to_cam
+            self.Tr_cam_to_velo_rect = np.linalg.inv(self.Tr_velo_to_cam_rect)
+        else:
+            self.Tr_cam_to_velo = Tr_cam_to_velo
+            self.Tr_velo_to_cam_rect = Tr_velo_to_cam_rect
+            self.Tr_cam_to_velo_rect = Tr_cam_to_velo_rect
         self.detections = detections
 
     def set_detections(self, detections):
@@ -216,26 +214,18 @@ class Pcl_Img_Utils:
         pcl_bbs = list(map(lambda pcl_bb: np.delete(pcl_bb,np.where(abs(pcl_bb[0,:]-offset)>max_distance),axis=1), pcl_bbs))
         return pcl_bbs
 
-    def get_frustum(self):
+    def get_frustum(self, detections):
         """
         Get the frustum that correspond to the bounding box of the detections.
         """
+        self.detections = detections
         pcls_bb = self.get_pcls_bb()
         pcls_bb = list(map(lambda pcl_bb: np.dot(self.R0_rect,pcl_bb), pcls_bb))
         points3d = self.get_points_3d()
         points3d, rots_y, pcls_bb = self.rotate_pcl_bb_y(points3d, pcls_bb, 0)
         pcls_bb = self.move_pcs_bb(points3d, pcls_bb)
         pcls_bb = list(map(lambda pcl_bb: np.dot(self.Tr_cam_to_velo_rect, pcl_bb), pcls_bb))
-        pcls_bb = self.filtrate_frustums(5.5, pcls_bb, 0)
-
-        #####################
-        # pcl_file = '/home/robesafe/Javier/kitti_prueba/training/velodyne/000000.bin'
-        # pcl_frustum = pcls_bb[0]
-        # pcl_frustum = np.array(pcl_frustum).T.astype(np.float32).flatten()
-        # # Save the numpy array values as a binary file
-        # with open(pcl_file, 'wb') as f:
-        #     f.write(pcl_frustum)
-        #####################
+        pcls_bb = self.filtrate_frustums(7.68, pcls_bb, 0)
 
         return pcls_bb, points3d, rots_y
 
@@ -258,7 +248,14 @@ class Pcl_Img_Utils:
                                                   [-np.sin(-angle),0,np.cos(-angle),0],
                                                   [0,0,0,1]], dtype=np.float), rots_y))
         fpp_points3d_cam = list(map(lambda fpp_point3d, rot_z: np.dot(rot_z,fpp_point3d), fpp_points3d_cam, matrix_rots_y))
-        rots_y = list(map(lambda x, y: float(x-y), fpp_detections['rot_y'].tolist(), rots_y))
+        def substract_roty(det_rot_z, rot_z):
+            new_rot_z = float(det_rot_z-rot_z)
+            if new_rot_z > np.pi:
+                new_rot_z -= 2*np.pi
+            elif new_rot_z < -np.pi:
+                new_rot_z += 2*np.pi
+            return new_rot_z
+        rots_y = list(map(substract_roty, fpp_detections['rot_y'].tolist(), rots_y))
         # Save on the dataframe
         fpp_detections['x'] = np.array(fpp_points3d_cam)[:,0].flatten()
         fpp_detections['y'] = np.array(fpp_points3d_cam)[:,1].flatten()

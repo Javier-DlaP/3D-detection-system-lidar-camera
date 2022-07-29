@@ -5,7 +5,6 @@ import argparse
 import os
 import numpy as np
 import random
-from PIL import Image
 from tqdm import tqdm
 import random
 import subprocess
@@ -19,11 +18,11 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("-pf", "--previous_folder", help="folder where KITTI dataset is stored", type=str, default='/media/robesafe/SSD_SATA/KITTI_DATASET/')
     parser.add_argument("-f", "--folder", help="folder to store the new dataset", type=str, default='/media/robesafe/SSD_SATA/KITTI_FRUSTUM_DATASET/')
-    parser.add_argument("-nbb", "--noise_bb", help="max noise in pixels that can be added", type=float, default=2)
-    parser.add_argument("-nd", "--noise_distance", help="max noise in the distance that can be added", type=float, default=5)
-    parser.add_argument("-r", "--repeat", help="repeat n times the dataset", type=int, default=1)
+    parser.add_argument("-nbb", "--noise_bb", help="max noise in pixels that can be added", type=float, default=8)#2)
+    parser.add_argument("-nd", "--noise_distance", help="max noise in the distance that can be added", type=float, default=6.5)#5)
+    parser.add_argument("-r", "--repeat", help="repeat n times the dataset", type=int, default=3)
     parser.add_argument("-n", "--normalize", help="normalization of class distribution", type=str, default=False)
-    parser.add_argument("-md", "--max_distance", help="maximum distance to filtrate the pointclouds", type=float, default=5.5)
+    parser.add_argument("-md", "--max_distance", help="maximum distance to filtrate the pointclouds", type=float, default=7.68)#5.5)
     parser.add_argument("-o", "--offset", help="offset in z coordinate (from camera)", type=float, default=0)
     args = parser.parse_args()
     if args.normalize == "True":
@@ -80,7 +79,7 @@ def main():
     #n_frames=100
 
     # Create loading bar
-    pbar = tqdm(total=n_frames*args.repeat)
+    pbar = tqdm(total=n_frames)
 
     # Create list to track the time necesary to modify the pcl
     time_list = []
@@ -89,7 +88,8 @@ def main():
     for i in range(n_frames):
         # Load the calibration matrices, the pointcloud and the image
         P2, R0_rect, Tr_velo_to_cam = kitti_detector.get_id_calib(i)
-        img, pcl = kitti_detector.get_id_img_pcl(i)
+        _imgs, pcl = kitti_detector.get_id_img_pcl(i)
+        img, img_np = _imgs
 
         df = load_kitti_groundtruth(i, args.previous_folder)
 
@@ -173,7 +173,7 @@ def main():
                                                                      (frustum_pcl_index[1,:]>float(row['x']+row['length']))|\
                                                                      (frustum_pcl_index[0,:]<float(row['z']-row['length']))|\
                                                                      (frustum_pcl_index[0,:]>float(row['z']+row['length']))),axis=1)
-            if frustum_pcl_index.shape[1] <= 3:
+            if frustum_pcl_index.shape[1] <= 5:
                 continue
 
             # Check times to calculate each object
